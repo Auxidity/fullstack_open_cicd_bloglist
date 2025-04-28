@@ -119,7 +119,7 @@ jobs:
         run: |
           curl -H "Content-Type: application/json" \
             -X POST \
-            -d '{"content": "**✅ Deployment pipeline succeeded!**"}' \
+            -d '{"content": "**✅ Deployment pipeline succeeded!**\n${{ github.repository }} ${{ github.sha }}\n"}' \
             ${{ secrets.DISCORD_WEBHOOK }}
 
       - name: Send Discord failure message
@@ -130,7 +130,7 @@ jobs:
           [[ "${{ needs.tag_release.result }}" == "failure" ]] && failed_jobs="${failed_jobs}❌ tag_release\n"
           [[ "${{ needs.deployment.result }}" == "failure" ]] && failed_jobs="${failed_jobs}❌ deployment\n"
 
-          payload="**🚨 Deployment pipeline failed!**\n\`\`\`\n$failed_jobs\`\`\`"
+          payload="**Deployment pipeline failed!**\n${{ github.repository }} ${{ github.sha }}\n\`\`\`\n$failed_jobs\`\`\`"
 
           curl -H "Content-Type: application/json" \
             -X POST \
