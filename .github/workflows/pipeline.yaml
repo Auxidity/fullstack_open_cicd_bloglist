@@ -1,0 +1,138 @@
+name: Deployment pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:    
+    branches: [main]
+    types: [opened, synchronize]
+
+jobs:
+  simple_deployment_pipeline:    
+    runs-on: ubuntu-22.04
+    outputs:
+      job_status: ${{ steps.set_status.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install backend dependancies
+        run: |
+          cd backend
+          npm install
+      - name: Install frontend dependancies
+        run: |
+          cd frontend
+          npm install
+      - name: Check frontend style
+        run: |
+          cd frontend
+          npm run eslint
+      - name: Build frontend dist
+        run: |
+          cd frontend
+          npm run build
+      - name: Unit Test
+        run: |
+          cd frontend
+          npm test
+      - id: set_status_pipeline_success
+        run: echo "status=success" >> $GITHUB_OUTPUT
+        if: success()
+      - id: set_status_pipeline_failure
+        run: echo "status=failure" >> $GITHUB_OUTPUT
+        if: failure()
+ 
+  tag_release:
+    needs: [simple_deployment_pipeline]
+    runs-on: ubuntu-22.04
+    outputs:
+      skip: ${{ steps.check_skip.outputs.skip }}
+      job_status: ${{ steps.set_status.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: '0'
+      - name: Github context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: echo "$GITHUB_CONTEXT"
+      - name: commits
+        env:
+          COMMITS: ${{ toJson(github.event.commits) }}
+        run: echo "$COMMITS"
+      - name: commit messages
+        env:
+          COMMIT_MESSAGES: ${{ toJSon(github.event.commits.*.message) }}
+        run: echo "$COMMIT_MESSAGES"
+      - name: Check for skip
+        id: check_skip
+        env:
+          COMMIT_MESSAGES: ${{ toJson(github.event.commits.*.message) }}
+        run: |
+          messages=$(echo "$COMMIT_MESSAGES" | jq -r '.[]' | tr '\n' ' ')
+          if echo "$messages" | grep -iq "#skip"; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Bump version and push tag
+        if: ${{ github.event_name == 'push' }} && steps.check_skip.outputs.skip == 'false'
+        uses: anothrNick/github-tag-action@1.71.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
+      - id: set_status_tag_success
+        run: echo "status=success" >> $GITHUB_OUTPUT
+        if: success()
+      - id: set_status_tag_failure
+        run: echo "status=failure" >> $GITHUB_OUTPUT
+        if: failure()
+  
+  deployment:
+    needs: [simple_deployment_pipeline, tag_release]
+    runs-on: ubuntu-22.04
+    outputs:  
+      job_status: ${{ steps.set_status.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger deployment
+        if: ${{ github.event_name == 'push' && needs.tag_release.outputs.skip == 'false' }}
+        run: curl https://api.render.com/deploy/srv-${{ secrets.RENDER_SERVICE_ID }}?key=${{ secrets.RENDER_API_KEY }}
+      - id: set_status_deployment_success
+        run: echo "status=success" >> $GITHUB_OUTPUT
+        if: success()
+      - id: set_status_deployment_failure
+        run: echo "status=failure" >> $GITHUB_OUTPUT
+        if: failure()
+  
+  discord:
+    needs: [simple_deployment_pipeline, e2e_test, tag_release, deployment]
+    runs-on: ubuntu-22.04
+    #So that we dont spam the channel too much while testing.. return to always() after testing
+    if: ${{ github.event_Name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Send Discord success message
+        if: ${{ needs.simple_deployment_pipeline.result == 'success' && needs.tag_release.result == 'success' && needs.deployment.result == 'success' }}
+        run: |
+          curl -H "Content-Type: application/json" \
+            -X POST \
+            -d '{"content": "**✅ Deployment pipeline succeeded!**"}' \
+            ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Send Discord failure message
+        if: ${{ needs.simple_deployment_pipeline.result == 'failure' || needs.tag_release.result == 'failure' || needs.deployment.result == 'failure' }}
+        run: |
+          failed_jobs=""
+          [[ "${{ needs.simple_deployment_pipeline.result }}" == "failure" ]] && failed_jobs="${failed_jobs}❌ simple_deployment_pipeline\n"
+          [[ "${{ needs.tag_release.result }}" == "failure" ]] && failed_jobs="${failed_jobs}❌ tag_release\n"
+          [[ "${{ needs.deployment.result }}" == "failure" ]] && failed_jobs="${failed_jobs}❌ deployment\n"
+
+          payload="**🚨 Deployment pipeline failed!**\n\`\`\`\n$failed_jobs\`\`\`"
+
+          curl -H "Content-Type: application/json" \
+            -X POST \
+            -d "{\"content\": \"$payload\"}" \
+            ${{ secrets.DISCORD_WEBHOOK }}
