@@ -109,7 +109,7 @@ jobs:
         if: failure()
   
   discord:
-    needs: [simple_deployment_pipeline, e2e_test, tag_release, deployment]
+    needs: [simple_deployment_pipeline, tag_release, deployment]
     runs-on: ubuntu-22.04
     #So that we dont spam the channel too much while testing.. return to always() after testing
     if: ${{ github.event_Name == 'push' && github.ref == 'refs/heads/main' }}
